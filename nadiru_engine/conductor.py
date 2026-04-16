@@ -1,11 +1,14 @@
 """Conductor: classify, route, execute, and learn from outcomes."""
 
 import json
+import logging
 import time
 from typing import Optional
 
 from .memory import MemoryStore
 from .providers.base import BaseProvider, GenerateResult, ModelInfo
+
+logger = logging.getLogger(__name__)
 
 RECOMPUTE_INTERVAL = 50
 CLASSIFY_FALLBACK = {"type": "unknown", "confidence": 0.0, "complexity": 3}
@@ -74,6 +77,7 @@ class Conductor:
                 prompt, classification, priority, max_cost, prefer_provider, signals, available
             )
 
+        routing = self._repair_invalid_delegate_routing(routing, available)
         routing = self._coerce_delegate_to_active_models(routing)
         route = routing.get("route", "delegate")
         provider_name = routing.get("provider")
@@ -167,7 +171,7 @@ class Conductor:
         errors = ", ".join(user_signals.get("recent_error_providers", [])) or "none"
 
         provider_lines = [
-            f"- {p['name']}: {', '.join(p['models'][:3])} (avg cost: ${p.get('avg_cost', 0):.4f})"
+            f"- {p['name']}: {', '.join(p['models'])} (avg cost: ${p.get('avg_cost', 0):.4f})"
             for p in available_providers
         ]
         providers_text = "\n".join(provider_lines) if provider_lines else "- none configured"
@@ -183,7 +187,8 @@ Preferred provider: {prefer_provider or 'none'}
 Conductor model: {self._conductor_provider.name}/{self._conductor_model} ({local_label})
 Local success rate for {task_type}: {int(local_rate * 100)}%
 User preferred model for {task_type}: {preferred}
-Available providers:
+You MUST pick a model name EXACTLY as listed below. Do not modify, abbreviate, or invent model names.
+Available providers (exact model IDs from discovery):
 {providers_text}
 Recent errors: {errors}
 Rules:
@@ -207,6 +212,75 @@ JSON: {{"route":"local|delegate","provider":"<name|null>","model":"<name|null>",
                 "Could not parse routing decision, defaulting to delegation",
             )
         return parsed
+
+    def _validate_routing(self, routing: dict, available_providers: list[dict]) -> bool:
+        """Verify the routed provider/model actually exists."""
+        provider = routing.get("provider")
+        model = routing.get("model")
+        if not provider or not model:
+            return False
+        for p in available_providers:
+            if p["name"] == provider and model in p["models"]:
+                return True
+        return False
+
+    def _best_delegate_pair(
+        self, available_providers: list[dict], provider_name: str
+    ) -> Optional[tuple[str, str]]:
+        """Pick best tier model for a provider using only names listed in available_providers."""
+        meta = next((x for x in available_providers if x["name"] == provider_name), None)
+        if not meta or not meta.get("models"):
+            return None
+        pn = meta["name"]
+        prov = self.providers.get(pn)
+        if not prov:
+            return None
+        allowed = set(meta["models"])
+        pool = [m for m in self._active_models_for_routing(pn, prov) if m.name in allowed]
+        if not pool:
+            return None
+        best = self._pick_best_model_from_models(pool)
+        chosen = best or pool[0]
+        return pn, chosen.name
+
+    def _repair_invalid_delegate_routing(
+        self, routing: dict, available_providers: list[dict]
+    ) -> dict:
+        """If delegate target is not in the discovered list, substitute a valid pair."""
+        if routing.get("route") != "delegate":
+            return routing
+        if not available_providers:
+            return routing
+        if self._validate_routing(routing, available_providers):
+            return routing
+        bad_p = routing.get("provider")
+        bad_m = routing.get("model")
+        picked = None
+        if bad_p:
+            picked = self._best_delegate_pair(available_providers, bad_p)
+        if not picked:
+            picked = self._best_delegate_pair(
+                available_providers, available_providers[0]["name"]
+            )
+        if not picked:
+            return routing
+        ap, am = picked
+        logger.warning(
+            "Conductor suggested %s/%s which doesn't exist, using %s/%s instead",
+            bad_p,
+            bad_m,
+            ap,
+            am,
+        )
+        out = dict(routing)
+        out["provider"] = ap
+        out["model"] = am
+        base = out.get("reason", "") or "Routing"
+        out["reason"] = (
+            f"{base} | Conductor suggested {bad_p}/{bad_m} which doesn't exist, "
+            f"using {ap}/{am} instead"
+        )
+        return out
 
     def _delegate_fallback(self, available_providers: list[dict], reason: str) -> dict:
         """Pick first paid provider with non-empty startup active models."""
