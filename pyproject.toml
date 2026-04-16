@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nadiru-engine"
-version = "0.1.0"
+version = "0.1.1"
 description = "Sovereign AI orchestration engine. A local or cloud Conductor learns your patterns and routes between providers intelligently."
 readme = "README.md"
 license = {text = "MIT"}
@@ -43,3 +43,4 @@ Issues = "https://github.com/hlk-devs/nadiru-engine/issues"
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+

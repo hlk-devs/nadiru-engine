@@ -1,4 +1,4 @@
-# Conductor Design
+﻿# Conductor Design
 
 ## Overview
 
@@ -10,6 +10,12 @@ The Conductor is the routing brain for Nadiru. It is provider-agnostic and can r
 
 Both classify and route prompts live in `nadiru_engine/conductor.py`.
 
+## Streaming vs routing
+
+**Classification and routing are synchronous:** `_classify` and `_route` use `generate()` and return complete JSON for decisions.
+
+**Generation can stream:** `POST /generate/stream` resolves the same routing target, then streams token chunks over SSE. The Conductor does not stream its internal routing JSON; only the final user-facing model output streams.
+
 ## Provider-Agnostic Execution
 
 The Conductor no longer depends on Ollama-specific helper methods. It accepts:
@@ -18,11 +24,11 @@ The Conductor no longer depends on Ollama-specific helper methods. It accepts:
 - `conductor_model`
 - `is_local_conductor`
 
-This enables:
+This enables three practical tiers:
 
-- cloud Conductor (Google/Anthropic/OpenAI)
-- beefy local Conductor
-- small local Conductor with cold-start protection
+- **Tier 1 — Cloud Conductor:** best routing JSON, no GPU (e.g. Gemini Flash, Claude Haiku).
+- **Tier 2 — Beefy local:** strong private routing (e.g. 70B class on Ollama).
+- **Tier 3 — Small local:** efficient; relies on delegate-first cold start until local trust is earned (e.g. 8–14B on Ollama).
 
 ## Classification and Routing
 
@@ -45,6 +51,14 @@ This enables:
 - extraction of first valid balanced JSON object
 
 If parsing fails, `_route` safely defaults to delegation.
+
+## Refusal detection and retry
+
+If the chosen model returns a policy-style refusal, the Conductor can **retry once** on a different provider (typically less restrictive), so users get an answer instead of a dead end when routing was optimistic.
+
+## Model validation after routing
+
+After a route names a provider and model id, the engine **validates** that the model exists in the provider's discovered list. The **Conductor model** is excluded from the pool used for delegated generation so routing and execution stay distinct.
 
 ## Cold Start Behavior
 
@@ -76,14 +90,11 @@ Signals influence routing through:
 
 All outcomes and routing reasons are logged for continuous implicit learning.
 
-## Conductor Tiers
+## Conductor Tiers (summary)
 
-1. **Cloud Conductor (recommended)**
-   - best JSON reliability and low latency for routing calls
-2. **Beefy Local Conductor**
-   - private, strong local quality
-3. **Small Local Conductor**
-   - efficient with delegate-first training period
+1. **Cloud Conductor (recommended)** — best JSON reliability and low latency for routing calls.
+2. **Beefy Local Conductor** — private, strong local quality.
+3. **Small Local Conductor** — efficient with delegate-first training period.
 
 ## Key Methods in `conductor.py`
 
