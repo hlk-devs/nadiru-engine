@@ -1,4 +1,8 @@
-"""Cerebras provider adapter."""
+﻿"""Cerebras provider adapter."""
+
+# NOTE: This provider uses an OpenAI-compatible API. It could be
+# replaced by OpenAICompatibleProvider in registry.py. Kept as a
+# separate file for any future provider-specific customization.
 
 import httpx
 from typing import Optional
@@ -101,3 +105,4 @@ class CerebrasProvider(BaseProvider):
                 content=f"ERROR: {str(e)}",
                 model=model_name, provider="cerebras", error="unknown",
             )
+

@@ -4,6 +4,7 @@ POST /connect, POST /generate, GET /query.
 """
 
 import os
+import time
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -211,6 +212,70 @@ async def query(
     return QueryResponse(**result)
 
 
+def _providers_payload() -> list[dict]:
+    result = []
+    for name, provider in conductor.providers.items():
+        models = [m.name for m in provider.models]
+        result.append(
+            {
+                "name": name,
+                "available": provider.is_available,
+                "models": models,
+                "model_count": len(models),
+            }
+        )
+    return result
+
+
+@app.get("/providers")
+async def list_providers():
+    """List all configured providers and their active models."""
+    return {"providers": _providers_payload()}
+
+
+@app.post("/test-provider")
+async def test_provider(provider_name: str, model_name: Optional[str] = None):
+    """Test a specific provider by sending a minimal prompt directly.
+    Bypasses the Conductor — goes straight to the provider."""
+    provider = conductor.providers.get(provider_name)
+    if not provider:
+        raise HTTPException(
+            status_code=404, detail=f"Provider '{provider_name}' not found"
+        )
+    if not provider.is_available:
+        raise HTTPException(
+            status_code=400, detail=f"Provider '{provider_name}' has no API key"
+        )
+
+    if not model_name:
+        models = provider.models
+        if not models:
+            raise HTTPException(
+                status_code=400, detail=f"Provider '{provider_name}' has no models"
+            )
+        model_name = min(models, key=lambda m: m.cost_per_1m_output).name
+
+    start = time.time()
+    result = await provider.generate(
+        model_name=model_name,
+        prompt="Reply with the single word OK.",
+        max_tokens=10,
+        temperature=0.0,
+    )
+    latency = int((time.time() - start) * 1000)
+
+    content = result.content or ""
+    return {
+        "provider": provider_name,
+        "model": model_name,
+        "status": "ok" if not result.error else "error",
+        "error": result.error,
+        "content": content[:100],
+        "latency_ms": latency,
+        "cost_estimate": result.cost_estimate,
+    }
+
+
 @app.get("/health")
 async def health():
     interaction_count = memory.get_interaction_count()
@@ -223,4 +288,5 @@ async def health():
         "conductor_model": os.getenv("CONDUCTOR_MODEL", "qwen2.5:14b"),
         "conductor_provider": os.getenv("CONDUCTOR_PROVIDER", "ollama"),
         "providers": provider_names,
+        "providers_detail": _providers_payload(),
     }

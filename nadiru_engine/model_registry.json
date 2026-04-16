@@ -332,6 +332,60 @@
       "max_context_window": 128000,
       "speed_tier": "medium",
       "quality_tier": 4
+    },
+    "mistral-large-latest": {
+      "provider": "mistral",
+      "cost_per_1m_input": 2.0,
+      "cost_per_1m_output": 6.0,
+      "max_output_tokens": 8192,
+      "max_context_window": 2000000,
+      "speed_tier": "medium",
+      "quality_tier": 4
+    },
+    "mistral-small-latest": {
+      "provider": "mistral",
+      "cost_per_1m_input": 0.2,
+      "cost_per_1m_output": 0.6,
+      "max_output_tokens": 8192,
+      "max_context_window": 131072,
+      "speed_tier": "fast",
+      "quality_tier": 3
+    },
+    "codestral-latest": {
+      "provider": "mistral",
+      "cost_per_1m_input": 0.3,
+      "cost_per_1m_output": 0.9,
+      "max_output_tokens": 8192,
+      "max_context_window": 256000,
+      "speed_tier": "fast",
+      "quality_tier": 4
+    },
+    "anthropic/claude-sonnet-4": {
+      "provider": "openrouter",
+      "cost_per_1m_input": 3.0,
+      "cost_per_1m_output": 15.0,
+      "max_output_tokens": 8192,
+      "max_context_window": 200000,
+      "speed_tier": "medium",
+      "quality_tier": 4
+    },
+    "google/gemini-2.5-flash": {
+      "provider": "openrouter",
+      "cost_per_1m_input": 0.15,
+      "cost_per_1m_output": 0.6,
+      "max_output_tokens": 8192,
+      "max_context_window": 1048576,
+      "speed_tier": "fast",
+      "quality_tier": 3
+    },
+    "meta-llama/llama-4-scout": {
+      "provider": "openrouter",
+      "cost_per_1m_input": 0.2,
+      "cost_per_1m_output": 0.2,
+      "max_output_tokens": 8192,
+      "max_context_window": 512000,
+      "speed_tier": "fast",
+      "quality_tier": 3
     }
   },
   "default_metadata": {
