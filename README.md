@@ -7,7 +7,7 @@ Sovereign AI orchestration engine with a Conductor that learns your patterns and
 Most orchestration layers are static routers around API keys. Nadiru is different: every request is classified, routed, logged, and used to improve the next decision. The Conductor adapts to your acceptance patterns, provider reliability, and cost constraints.
 
 ![Nadiru Dashboard](docs/images/dashboard.png)
-*The Nadiru dashboard showing intelligent routing across providers. Simple questions route to free models, complex tasks delegate to quality providers. Total cost for 5 responses: $0.007.*
+*Intelligent routing in action: simple questions route to free models, complex tasks delegate to quality providers. Five responses, three different models, two providers, total cost $0.007.*
 
 ## Conductor Tiers
 
