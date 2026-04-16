@@ -1,0 +1,14 @@
+.env
+.env.kevin
+__pycache__/
+*.pyc
+*.pyo
+*.db
+*.db-shm
+*.db-wal
+.pytest_cache/
+dist/
+build/
+*.egg-info/
+.vscode/
+.idea/
