@@ -26,6 +26,46 @@ ROUTE_RULES = """1. quality -> delegate to best model
 6. speed -> lowest latency option
 7. if max_cost blocks providers -> local
 8. default: complexity>3 or local_success<50% -> delegate"""
+_REFUSAL_MARKERS_STRONG = (
+    "i can't assist with that",
+    "i cannot assist with that",
+    "i can't help with that",
+    "i cannot help with that",
+    "against my guidelines",
+    "i'm not able to provide",
+    "i am not able to provide",
+    "i must decline",
+    "i'm programmed to be a harmless",
+    "i am programmed to be a harmless",
+    "falls into a grey area",
+    "could potentially be used for unethical",
+    "sorry, but i can't",
+    "sorry, but i cannot",
+    "i'm sorry, but as an ai",
+    "i am sorry, but as an ai",
+)
+
+_REFUSAL_MARKERS_WEAK_ABLE = (
+    "i'm unable to",
+    "i am unable to",
+)
+
+_CAPABILITY_NOT_REFUSAL = (
+    "i don't have real-time",
+    "i don't have access to",
+    "i can't browse the internet",
+)
+
+_RETRY_AFTER_REFUSAL_ORDER = (
+    "deepseek",
+    "groq",
+    "together",
+    "cerebras",
+    "openai",
+    "anthropic",
+    "google",
+    "perplexity",
+)
 
 
 class Conductor:
@@ -53,6 +93,37 @@ class Conductor:
         if provider_name != self._conductor_provider.name:
             return active
         return [m for m in active if m.name != self._conductor_model]
+
+    def _detect_refusal(self, content: str) -> bool:
+        """True if content looks like a content-policy refusal (substring match, case-insensitive)."""
+        if not content:
+            return False
+        lower = content.lower()
+        if any(s in lower for s in _REFUSAL_MARKERS_STRONG):
+            return True
+        if any(s in lower for s in _REFUSAL_MARKERS_WEAK_ABLE):
+            if any(c in lower for c in _CAPABILITY_NOT_REFUSAL):
+                return False
+            return True
+        return False
+
+    def _pick_retry_after_refusal(
+        self,
+        original_provider: str,
+        original_model: str,
+        available_providers: list[dict],
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Pick a different provider/model for retry after refusal.
+        Prefer providers known to be less restrictive."""
+        for provider_name in _RETRY_AFTER_REFUSAL_ORDER:
+            if provider_name == original_provider:
+                continue
+            for p in available_providers:
+                if p["name"] == provider_name and p.get("models"):
+                    model = p["models"][0]
+                    return (provider_name, model)
+        return (None, None)
+
 
     async def handle_request(
         self,
@@ -104,6 +175,31 @@ class Conductor:
                     fb_provider, fb_model = fallback
                     routing_reason += f" | Fallback from {provider_name}/{model_name}"
                     result = await self._delegate(fb_provider, fb_model, prompt, messages, task_type)
+
+        if result.content and self._detect_refusal(result.content):
+            retry_provider, retry_model = self._pick_retry_after_refusal(
+                original_provider=result.provider,
+                original_model=result.model,
+                available_providers=available,
+            )
+            if retry_provider and retry_model:
+                refused_provider = result.provider
+                refused_model = result.model
+                retry_result = await self._delegate(
+                    provider_name=retry_provider,
+                    model_name=retry_model,
+                    prompt=prompt,
+                    messages=messages,
+                    task_type=task_type,
+                )
+                if not self._detect_refusal(retry_result.content):
+                    result = retry_result
+                    rr = routing_reason or ""
+                    routing_reason = (
+                        rr
+                        + f" | Refusal from {refused_provider}/{refused_model}, "
+                        + f"retried with {retry_provider}/{retry_model}"
+                    )
 
         latency_ms = int((time.time() - started) * 1000)
         request_id = self.memory.log_interaction(
