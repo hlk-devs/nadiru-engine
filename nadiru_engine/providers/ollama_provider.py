@@ -1,5 +1,6 @@
 """Ollama provider adapter."""
 
+import json
 import httpx
 from typing import Optional
 from ..model_catalog import ModelCatalog
@@ -120,4 +121,50 @@ class OllamaProvider(BaseProvider):
                 provider="ollama",
                 error="unknown",
             )
+    async def stream_generate(
+        self, model_name: str, prompt: str,
+        messages: list[dict] = None,
+        system_prompt: str = None,
+        max_tokens: int = None,
+        temperature: float = 0.7,
+    ):
+        chat_messages = []
+        if system_prompt:
+            chat_messages.append({"role": "system", "content": system_prompt})
+        if messages:
+            chat_messages.extend(messages)
+        chat_messages.append({"role": "user", "content": prompt})
+        payload = {
+            "model": model_name,
+            "messages": chat_messages,
+            "stream": True,
+            "options": {"temperature": temperature},
+        }
+        if max_tokens:
+            payload["options"]["num_predict"] = max_tokens
+        prev = ""
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                async with client.stream(
+                    "POST", f"{self.base_url}/api/chat", json=payload
+                ) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if not line.strip():
+                            continue
+                        try:
+                            obj = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        full = (obj.get("message") or {}).get("content") or ""
+                        if len(full) > len(prev):
+                            yield full[len(prev):]
+                            prev = full
+        except Exception:
+            result = await self.generate(
+                model_name, prompt, messages, system_prompt, max_tokens, temperature
+            )
+            if result.content:
+                yield result.content
+
 

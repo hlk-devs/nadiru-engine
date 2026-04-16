@@ -118,3 +118,60 @@ class GoogleProvider(BaseProvider):
                 content=f"ERROR: {str(e)}",
                 model=model_name, provider="google", error="unknown",
             )
+    async def stream_generate(
+        self, model_name: str, prompt: str,
+        messages: list[dict] = None,
+        system_prompt: str = None,
+        max_tokens: int = None,
+        temperature: float = 0.7,
+    ):
+        if not self.api_key:
+            yield ""
+            return
+        model_info = self.get_model(model_name)
+        if max_tokens is None:
+            max_tokens = model_info.max_output_tokens if model_info else 4096
+        contents = []
+        if messages:
+            for msg in messages:
+                role = "user" if msg["role"] == "user" else "model"
+                contents.append({"role": role, "parts": [{"text": msg["content"]}]})
+        contents.append({"role": "user", "parts": [{"text": prompt}]})
+        payload = {
+            "contents": contents,
+            "generationConfig": {
+                "temperature": temperature,
+                "maxOutputTokens": max_tokens,
+                "thinkingConfig": {"thinkingBudget": 0},
+            },
+        }
+        if system_prompt:
+            payload["systemInstruction"] = {"parts": [{"text": system_prompt}]}
+        url = (
+            f"{self.API_BASE}/{model_name}:streamGenerateContent"
+            f"?key={self.api_key}&alt=sse"
+        )
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                async with client.stream("POST", url, json=payload) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data: "):
+                            continue
+                        raw = line[6:].strip()
+                        try:
+                            data = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        for cand in data.get("candidates") or []:
+                            for part in cand.get("content", {}).get("parts") or []:
+                                txt = part.get("text")
+                                if txt:
+                                    yield txt
+        except Exception:
+            result = await self.generate(
+                model_name, prompt, messages, system_prompt, max_tokens, temperature
+            )
+            if result.content:
+                yield result.content
+

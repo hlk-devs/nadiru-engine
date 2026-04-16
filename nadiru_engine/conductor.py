@@ -234,6 +234,113 @@ class Conductor:
             "routing_reason": routing_reason,
         }
 
+    def _find_cheapest_paid_model_pair(self) -> Optional[tuple[str, str]]:
+        cheapest: Optional[tuple[float, str, str]] = None
+        for name, provider in self.providers.items():
+            if name == "ollama" or not provider.is_available:
+                continue
+            for model in self._active_models_for_routing(name, provider):
+                opt = (model.cost_per_1m_output, name, model.name)
+                if cheapest is None or opt[0] < cheapest[0]:
+                    cheapest = opt
+        if cheapest:
+            return cheapest[1], cheapest[2]
+        return None
+
+    async def resolve_stream_target(
+        self,
+        prompt: str,
+        messages: Optional[list[dict]],
+        priority: str,
+        max_cost: Optional[float],
+        prefer_provider: Optional[str],
+    ) -> tuple[BaseProvider, str, str, str, int]:
+        """Classify and route; return provider, model, routing_reason, task_type, complexity for streaming."""
+        signals = self._get_signals()
+        classification = await self._classify(prompt)
+        task_type = classification.get("type", "unknown")
+        complexity = classification.get("complexity", 3)
+
+        available = self._get_available_providers()
+        routing = self._check_cold_start_override(task_type, signals, available)
+        if routing is None:
+            routing = await self._route(
+                prompt, classification, priority, max_cost, prefer_provider, signals, available
+            )
+
+        routing = self._repair_invalid_delegate_routing(routing, available)
+        routing = self._coerce_delegate_to_active_models(routing)
+        route = routing.get("route", "delegate")
+        provider_name = routing.get("provider")
+        model_name = routing.get("model")
+        routing_reason = routing.get("reason", "")
+
+        if route == "local" or (not provider_name and not model_name):
+            if self._is_local_conductor:
+                return (
+                    self._conductor_provider,
+                    self._conductor_model,
+                    routing_reason or "",
+                    task_type,
+                    complexity,
+                )
+            pair = self._find_cheapest_paid_model_pair()
+            if pair:
+                pn, mn = pair
+                prov = self.providers.get(pn)
+                if prov:
+                    return (
+                        prov,
+                        mn,
+                        routing_reason or "Cloud conductor local route mapped to cheapest delegated model",
+                        task_type,
+                        complexity,
+                    )
+            return (
+                self._conductor_provider,
+                self._conductor_model,
+                routing_reason or "",
+                task_type,
+                complexity,
+            )
+
+        prov = self.providers.get(provider_name or "")
+        if prov and prov.is_available and model_name:
+            return prov, model_name, routing_reason or "", task_type, complexity
+
+        fb = self._delegate_fallback(available, "Provider unavailable; using fallback")
+        if fb.get("provider") and fb.get("model"):
+            pn, mn = fb["provider"], fb["model"]
+            p2 = self.providers.get(pn)
+            if p2 and p2.is_available:
+                return (
+                    p2,
+                    mn,
+                    fb.get("reason", routing_reason) or "",
+                    task_type,
+                    complexity,
+                )
+
+        cheap = self._find_cheapest_paid_model_pair()
+        if cheap:
+            pn, mn = cheap
+            return (
+                self.providers[pn],
+                mn,
+                routing_reason or "fallback to cheapest paid",
+                task_type,
+                complexity,
+            )
+
+        return (
+            self._conductor_provider,
+            self._conductor_model,
+            routing_reason or "fallback to conductor",
+            task_type,
+            complexity,
+        )
+
+
     async def _classify(self, prompt: str) -> dict:
         """Run classification prompt on configured conductor model."""
         result = await self._conductor_provider.generate(

@@ -1,6 +1,7 @@
 """Provider base types and interface."""
 
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Optional
 
@@ -61,6 +62,28 @@ class BaseProvider(ABC):
                        max_tokens: int = None,
                        temperature: float = 0.7) -> GenerateResult:
         ...
+
+    async def stream_generate(
+        self,
+        model_name: str,
+        prompt: str,
+        messages: list[dict] = None,
+        system_prompt: str = None,
+        max_tokens: int = None,
+        temperature: float = 0.7,
+    ) -> AsyncIterator[str]:
+        """Stream response tokens. Yields str chunks.
+        Default implementation falls back to non-streaming."""
+        result = await self.generate(
+            model_name,
+            prompt,
+            messages,
+            system_prompt,
+            max_tokens,
+            temperature,
+        )
+        if result.content:
+            yield result.content
 
     def get_model(self, model_name: str) -> Optional[ModelInfo]:
         for m in self._active_models:

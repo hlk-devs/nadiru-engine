@@ -1,5 +1,6 @@
 """Anthropic provider adapter."""
 
+import json
 import httpx
 from typing import Optional
 from ..model_catalog import ModelCatalog
@@ -112,3 +113,63 @@ class AnthropicProvider(BaseProvider):
                 content=f"ERROR: {str(e)}",
                 model=model_name, provider="anthropic", error="unknown",
             )
+    async def stream_generate(
+        self, model_name: str, prompt: str,
+        messages: list[dict] = None,
+        system_prompt: str = None,
+        max_tokens: int = None,
+        temperature: float = 0.7,
+    ):
+        if not self.api_key:
+            yield ""
+            return
+        model_info = self.get_model(model_name)
+        if max_tokens is None:
+            max_tokens = model_info.max_output_tokens if model_info else 4096
+        api_messages = []
+        if messages:
+            api_messages.extend(messages)
+        api_messages.append({"role": "user", "content": prompt})
+        payload = {
+            "model": model_name,
+            "max_tokens": max_tokens,
+            "messages": api_messages,
+            "temperature": temperature,
+            "stream": True,
+        }
+        if system_prompt:
+            payload["system"] = system_prompt
+        headers = {
+            "x-api-key": self.api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                async with client.stream("POST", self.API_URL, json=payload, headers=headers) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if not line or line.startswith(":"):
+                            continue
+                        if not line.startswith("data: "):
+                            continue
+                        raw = line[6:].strip()
+                        if raw == "[DONE]":
+                            break
+                        try:
+                            ev = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        if ev.get("type") == "content_block_delta":
+                            delta = ev.get("delta") or {}
+                            if delta.get("type") == "text_delta":
+                                piece = delta.get("text") or ""
+                                if piece:
+                                    yield piece
+        except Exception:
+            result = await self.generate(
+                model_name, prompt, messages, system_prompt, max_tokens, temperature
+            )
+            if result.content:
+                yield result.content
+

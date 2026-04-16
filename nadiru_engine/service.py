@@ -3,6 +3,7 @@ Service layer - FastAPI with three endpoints.
 POST /connect, POST /generate, GET /query.
 """
 
+import json
 import os
 import time
 from contextlib import asynccontextmanager
@@ -10,9 +11,10 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from .conductor import Conductor
+from .conductor import RECOMPUTE_INTERVAL, Conductor
 from .memory import MemoryStore
 from .model_catalog import ModelCatalog
 from .providers.ollama_provider import OllamaProvider
@@ -37,6 +39,7 @@ class GenerateRequest(BaseModel):
     priority: Optional[str] = None
     max_cost: Optional[float] = None
     prefer_provider: Optional[str] = None
+    stream: bool = False
 
 class GenerateResponse(BaseModel):
     content: str
@@ -164,6 +167,97 @@ async def connect(req: ConnectRequest):
         default_priority=req.default_priority,
     )
     return ConnectResponse(**result)
+
+
+
+
+@app.post("/generate/stream")
+async def generate_stream(req: GenerateRequest):
+    """Stream a response as Server-Sent Events."""
+    nadi = memory.get_nadi(req.nadi_id)
+    if not nadi:
+        raise HTTPException(status_code=404, detail=f"Nadi '{req.nadi_id}' not found")
+
+    priority = req.priority or nadi["default_priority"]
+
+    async def event_stream():
+        start_time = time.time()
+        prov, model_name, routing_reason, task_type, complexity = await conductor.resolve_stream_target(
+            req.prompt,
+            req.messages,
+            priority,
+            req.max_cost,
+            req.prefer_provider,
+        )
+        prov_name = prov.name
+        route_info = {
+            "type": "routing",
+            "provider": prov_name,
+            "model": model_name,
+            "reason": routing_reason,
+        }
+        yield f"data: {json.dumps(route_info)}\n\n"
+
+        full_content = ""
+        try:
+            async for chunk in prov.stream_generate(
+                model_name=model_name,
+                prompt=req.prompt,
+                messages=req.messages,
+                temperature=conductor._temp_for_type(task_type),
+            ):
+                full_content += chunk
+                yield f"data: {json.dumps({'type': 'token', 'content': chunk})}\n\n"
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+
+        latency_ms = int((time.time() - start_time) * 1000)
+        tin = max(0, len(req.prompt) // 4)
+        tout = max(0, len(full_content) // 4)
+        cost_estimate = prov.estimate_cost(model_name, tin, tout)
+
+        request_id = memory.log_interaction(
+            nadi_id=req.nadi_id,
+            prompt=req.prompt,
+            content=full_content,
+            model=model_name,
+            provider=prov_name,
+            tokens_in=tin,
+            tokens_out=tout,
+            cost_estimate=cost_estimate,
+            latency_ms=latency_ms,
+            task_type=task_type,
+            complexity=complexity,
+            routing_reason=routing_reason,
+        )
+
+        conductor._interactions_since_recompute += 1
+        if conductor._interactions_since_recompute >= RECOMPUTE_INTERVAL:
+            conductor._cached_signals = memory.compute_user_signals()
+            conductor._interactions_since_recompute = 0
+
+        final = {
+            "type": "done",
+            "request_id": request_id,
+            "provider": prov_name,
+            "model": model_name,
+            "latency_ms": latency_ms,
+            "routing_reason": routing_reason,
+            "cost_estimate": cost_estimate,
+            "tokens_in": tin,
+            "tokens_out": tout,
+        }
+        yield f"data: {json.dumps(final)}\n\n"
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/generate", response_model=GenerateResponse)

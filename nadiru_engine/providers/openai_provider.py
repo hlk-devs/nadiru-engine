@@ -1,5 +1,6 @@
 """OpenAI provider adapter."""
 
+import json
 import httpx
 from typing import Optional
 from ..model_catalog import ModelCatalog
@@ -107,3 +108,59 @@ class OpenAIProvider(BaseProvider):
                 content=f"ERROR: {str(e)}",
                 model=model_name, provider="openai", error="unknown",
             )
+    async def stream_generate(
+        self, model_name: str, prompt: str,
+        messages: list[dict] = None,
+        system_prompt: str = None,
+        max_tokens: int = None,
+        temperature: float = 0.7,
+    ):
+        if not self.api_key:
+            yield ""
+            return
+        model_info = self.get_model(model_name)
+        if max_tokens is None:
+            max_tokens = model_info.max_output_tokens if model_info else 4096
+        api_messages = []
+        if system_prompt:
+            api_messages.append({"role": "system", "content": system_prompt})
+        if messages:
+            api_messages.extend(messages)
+        api_messages.append({"role": "user", "content": prompt})
+        payload = {
+            "model": model_name,
+            "max_tokens": max_tokens,
+            "messages": api_messages,
+            "temperature": temperature,
+            "stream": True,
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                async with client.stream("POST", self.API_URL, json=payload, headers=headers) as resp:
+                    resp.raise_for_status()
+                    async for line in resp.aiter_lines():
+                        if not line or not line.startswith("data: "):
+                            continue
+                        raw = line[6:].strip()
+                        if raw == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        for choice in chunk.get("choices") or []:
+                            delta = choice.get("delta") or {}
+                            c = delta.get("content")
+                            if c:
+                                yield c
+        except Exception:
+            result = await self.generate(
+                model_name, prompt, messages, system_prompt, max_tokens, temperature
+            )
+            if result.content:
+                yield result.content
+
