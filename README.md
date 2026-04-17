@@ -19,7 +19,7 @@
 ## Features
 
 - Provider-agnostic Conductor (Ollama, Gemini, Claude, or any configured model)
-- Dynamic model discovery (130+ models found automatically, depending on keys)
+- Dynamic model discovery (400+ models found automatically, depending on keys)
 - Response streaming with SSE (`POST /generate/stream`)
 - Refusal detection and automatic retry
 - Implicit feedback learning
