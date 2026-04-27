@@ -1,93 +1,127 @@
-﻿# Nadiru Engine
+# Nadiru
 
-### Opening
+**An AI orchestration engine that picks the right model for the job.**
 
-**Sovereign AI orchestration engine with a learning Conductor.**
+You send it a prompt. A Conductor LLM classifies what kind of task it is, picks the right provider and model based on cost, quality, and what's worked before, and routes the request. It learns from outcomes. It handles refusals. It works with local models, cloud APIs, or any mix you want to wire up.
 
 ![Nadiru Dashboard](docs/images/dashboard.png)
 
-*Intelligent routing in action: simple questions route to efficient models, complex tasks delegate to quality providers — with full visibility in the dashboard.*
+*Routing in action. Simple questions go to fast cheap models. Complex tasks delegate to better ones. The dashboard shows what got routed where and why.*
 
-## Why Nadiru?
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+![Tests](https://img.shields.io/badge/tests-34_passing-green)
+![Python](https://img.shields.io/badge/python-3.11+-blue)
 
-**Not just another API proxy.** The Conductor learns *your* patterns: it classifies every request, routes based on priority and history, logs outcomes, and tightens decisions over time. **LiteLLM** and similar tools focus on **API compatibility** — swapping backends behind one interface. **OpenRouter** is a **model marketplace** with a unified API. Nadiru is different: it is a **routing brain with memory** — implicit feedback, cold-start protection, refusal handling, and a community model registry — so delegation gets smarter the longer you run it.
+## Why this exists
 
-- **Delegate-first:** starts smart, gets smarter over time.
-- **Provider-agnostic:** works with local models or cloud APIs.
-- **Dynamic model discovery:** no hardcoded lists in core routing.
+I was paying for Anthropic, OpenAI, and Google subscriptions, plus running Ollama locally, and manually deciding which one to use for what. Quick math problem? Free Gemini Flash. Complex code refactor? Claude Sonnet. Creative writing? Different Claude. It was annoying to keep track of, and I kept making the wrong call and either burning money on overkill models or getting bad output from undersized ones.
 
-## Features
+OpenRouter and LiteLLM both solve part of this. They give you one API to talk to many providers. But they don't actually think about the request. They route based on static rules you configure, not based on what the prompt is actually asking for.
 
-- Provider-agnostic Conductor (Ollama, Gemini, Claude, or any configured model)
-- Dynamic model discovery (400+ models found automatically, depending on keys)
-- Response streaming with SSE (`POST /generate/stream`)
-- Refusal detection and automatic retry
-- Implicit feedback learning
-- Cold start protection (delegate-first)
-- 15+ provider adapters including generic OpenAI-compatible
-- Web dashboard with live routing visualization ([nadiru-nadis](https://github.com/hlk-devs/nadiru-nadis))
-- Direct provider health testing (`POST /test-provider`)
-- Community-maintainable model registry (`model_registry.json`)
-- MIT licensed, 34 tests, CI pipeline
+So I built Nadiru. The core idea is that a small fast model (the Conductor) reads every incoming prompt, classifies it, and decides where it should go. Over time it learns which models are good at which tasks based on whether you re-prompted, how long things took, what cost what. The longer you run it, the better it gets at sending things to the right place.
 
-## Three Conductor Tiers
+I wrote the longer story on [dev.to](https://dev.to/homelesslighthousekeeper/i-built-an-open-source-ai-orchestration-engine-that-learns-how-you-work-550l) if you want context.
 
-| Tier | Conductor | Notes |
-|------|-----------|--------|
-| **1 — Cloud** | e.g. Gemini Flash, Claude Haiku | Best routing JSON, **no GPU** |
-| **2 — Beefy local** | e.g. 70B on Ollama | Good routing, full privacy |
-| **3 — Small local** | e.g. 8–14B | Needs cold-start training period (delegate-first) |
+## What makes it different
 
-## Quick Start
+**The Conductor is itself a model, and you pick which one.** Run a free local model on Ollama for routing. Or use Gemini Flash or Claude Haiku in the cloud for better routing JSON without needing a GPU. Or burn the latency and use a beefy model for the smartest decisions. It's your call.
 
-1. Install **Ollama** *or* choose a **cloud Conductor** (set `CONDUCTOR_PROVIDER` and API key).
-2. Clone: `git clone https://github.com/hlk-devs/nadiru-engine.git && cd nadiru-engine`
-3. Copy `.env.example` to `.env` and add your API keys.
-4. `pip install -r requirements.txt`
-5. `python -m nadiru_engine`
-6. Open the **dashboard** from [nadiru-nadis](https://github.com/hlk-devs/nadiru-nadis) (`nadi-dashboard/index.html` or serve it) pointed at the engine.
+**It learns from outcomes.** Every interaction logs task type, latency, cost, refusals, retries, and whether you came back and rephrased. The Conductor uses these signals to tighten future routing. If a 14B local model has a 70% success rate on summaries, future summaries route locally. If GPT-4o keeps refusing a certain task type, that task starts going elsewhere.
 
-## API Contract
+**It handles refusals.** When a model returns a policy refusal, Nadiru can retry once on a less restrictive provider. You get an answer instead of a dead end.
 
-| Method | Path | Purpose |
-|--------|------|---------|
-| `POST` | `/connect` | Register a Nadi; returns `nadi_id` |
-| `POST` | `/generate` | Full response in one JSON body |
-| `GET` | `/query` | Paginated interaction history |
-| `POST` | `/generate/stream` | SSE: routing event, token chunks, `done` |
-| `GET` | `/providers` | Configured providers and model lists |
-| `POST` | `/test-provider` | Direct provider health check |
-| `GET` | `/health` | Engine and conductor status |
+**It's actually provider-agnostic.** 15+ adapters built in. Any OpenAI-compatible API drops in by adding an env var to the registry. The Conductor itself can be any of them.
 
-## Building a Nadi
+**It logs everything.** Cost per request, tokens used, routing reason, fallback attempts, refusals. Every decision is auditable.
 
-A **Nadi** is any client that talks to the engine: CLI, web app, automation, IDE plugin. Register once, then send prompts under that `nadi_id` so interactions are logged and learning applies.
+## Currently used in production
+
+Nadiru is the orchestration layer behind [Paaseki](https://paaseki.com), an AI-powered SEO audit service. Each audit costs about half a cent in AI fees because the Conductor routes most work to cheap models and only escalates when needed. That kind of cost control would be miserable to manage by hand.
+
+If you build something on top of Nadiru, open an issue or PR and I'll add it here.
+
+## Quick start
+
+About 90 seconds if you have an API key handy.
+
+```bash
+git clone https://github.com/hlk-devs/nadiru-engine.git
+cd nadiru-engine
+pip install -r requirements.txt
+cp .env.example .env
+# edit .env, add at least one provider key (Anthropic, OpenAI, Google, etc)
+python -m nadiru_engine
+```
+
+Engine starts on `http://localhost:8765`. In another terminal:
 
 ```python
 import httpx
 
 ENGINE = "http://localhost:8765"
 
-r = httpx.post(f"{ENGINE}/connect", json={"name": "my-nadi", "default_priority": "balanced"})
+# Register your client (called a "Nadi")
+r = httpx.post(f"{ENGINE}/connect", json={
+    "name": "demo",
+    "default_priority": "balanced"
+})
 nadi_id = r.json()["nadi_id"]
 
+# Generate something
 r = httpx.post(f"{ENGINE}/generate", json={
     "nadi_id": nadi_id,
-    "prompt": "Explain quantum entanglement simply",
+    "prompt": "Explain quantum entanglement to a 10 year old",
 })
-print(r.json()["content"])
+result = r.json()
 
-r = httpx.get(f"{ENGINE}/query", params={"nadi_id": nadi_id, "limit": 10})
-print(r.json()["total"])
+print(result["content"])
+print(f"\nRouted to: {result['provider']}/{result['model']}")
+print(f"Reason: {result['routing_reason']}")
+print(f"Cost: ${result['cost_estimate']:.6f}")
+print(f"Latency: {result['latency_ms']}ms")
 ```
 
-See **[nadiru-nadis](https://github.com/hlk-devs/nadiru-nadis)** for six example Nadis: web dashboard, CLI chat, cost reporting, health monitoring, translation, and summarization.
+That's it. The Conductor read your prompt, decided where to send it, and routed accordingly.
 
-## Supported Providers
+## The Conductor decision
+
+The Conductor's job is small (read prompt, classify, return JSON), so you don't need an expensive model for it. Three reasonable defaults:
+
+| Tier | Conductor | When to use |
+|------|-----------|-------------|
+| Cloud routing | Gemini 2.5 Flash, Claude Haiku 4.5 | Best routing JSON, no GPU needed, roughly $0.0001 per decision |
+| Beefy local | 70B+ on Ollama | Full privacy, no per-request cost, needs decent GPU |
+| Small local | 8 to 14B on Ollama | Free, slower, delegates more during cold start until it earns trust |
+
+Set your choice with `CONDUCTOR_PROVIDER` and `CONDUCTOR_MODEL` in your `.env`. Gemini Flash is what I use day to day. It's cheap, fast, and the JSON is reliable.
+
+There's a longer write-up of how the Conductor works in [docs/CONDUCTOR_DESIGN.md](docs/CONDUCTOR_DESIGN.md) if you want the details.
+
+## API surface
+
+| Method | Path | Purpose |
+|--------|------|---------|
+| `POST` | `/connect` | Register a client, returns a `nadi_id` |
+| `POST` | `/generate` | One-shot generation, full metadata in response |
+| `POST` | `/generate/stream` | SSE streaming. Routing event first, then token chunks, then `done` |
+| `GET`  | `/query` | Paginated interaction history per Nadi |
+| `GET`  | `/providers` | Configured providers and discovered models |
+| `POST` | `/test-provider` | Direct provider health check |
+| `GET`  | `/health` | Engine and Conductor status |
+
+Every `/generate` response includes which provider and model handled it, why, what it cost, and how long it took. No black boxes.
+
+## What's a Nadi?
+
+A Nadi is anything that talks to the engine. CLI, web app, automation script, IDE plugin, whatever. You register it once, get an ID, and from then on the engine logs interactions under that ID and learns from them. Each Nadi has its own history and the Conductor uses that history when routing.
+
+There's a companion repo at [nadiru-nadis](https://github.com/hlk-devs/nadiru-nadis) with six example Nadis: a web dashboard, a CLI chat, a cost reporter, a health monitor, a translator, and a summarizer. Worth cloning if you want to see what building a Nadi looks like.
+
+## Supported providers
 
 | Provider | Adapter | Auth env var |
 |----------|---------|--------------|
-| Ollama | `OllamaProvider` | (local; optional `LOCAL_MODEL_URL` / `OLLAMA_BASE_URL`) |
+| Ollama | `OllamaProvider` | local, optional `OLLAMA_BASE_URL` |
 | Anthropic | `AnthropicProvider` | `ANTHROPIC_API_KEY` |
 | OpenAI | `OpenAIProvider` | `OPENAI_API_KEY` |
 | Google | `GoogleProvider` | `GOOGLE_API_KEY` |
@@ -101,17 +135,18 @@ See **[nadiru-nadis](https://github.com/hlk-devs/nadiru-nadis)** for six example
 | Fireworks | `OpenAICompatibleProvider` | `FIREWORKS_API_KEY` |
 | AI21 | `OpenAICompatibleProvider` | `AI21_API_KEY` |
 | Cohere | `OpenAICompatibleProvider` | `COHERE_API_KEY` |
-| Azure OpenAI | `OpenAICompatibleProvider` | `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_ENDPOINT` |
+| Azure OpenAI | `OpenAICompatibleProvider` | `AZURE_OPENAI_API_KEY` plus `AZURE_OPENAI_ENDPOINT` |
 
-Any OpenAI-compatible API works: add an env var and a `PROVIDER_MAP` entry in `registry.py`.
+Any other OpenAI-compatible API works. Add an env var and a `PROVIDER_MAP` entry in `nadiru_engine/providers/registry.py` and you're set. Models are discovered dynamically, no hardcoded lists.
 
-## Project Structure
+## Project layout
 
-```text
+```
 nadiru-engine/
 ├── README.md
 ├── CHANGELOG.md
 ├── CONTRIBUTING.md
+├── CODE_OF_CONDUCT.md
 ├── LICENSE
 ├── pyproject.toml
 ├── requirements.txt
@@ -120,8 +155,6 @@ nadiru-engine/
 │   ├── CONDUCTOR_DESIGN.md
 │   └── images/
 │       └── dashboard.png
-├── community-nadis/
-│   └── README.md
 ├── nadiru_engine/
 │   ├── __main__.py
 │   ├── service.py
@@ -134,9 +167,11 @@ nadiru-engine/
 │       ├── registry.py
 │       ├── ollama_provider.py
 │       ├── openai_compatible_provider.py
-│       └── …
+│       └── ...
 └── tests/
 ```
+
+The engine stays small on purpose. Routing, memory, providers, API. Everything else lives in Nadis.
 
 ## Roadmap
 
@@ -146,16 +181,21 @@ nadiru-engine/
 - [x] Direct provider health testing (v0.1.1)
 - [ ] Configurable routing prompts (v0.2.0)
 - [ ] Periodic model re-discovery (v0.2.0)
-- [ ] Nadi SDK Python package (v0.3.0)
-- [ ] Pipeline / multi-step Nadi support (v0.3.0)
+- [ ] Python SDK package (v0.3.0)
+- [ ] Pipeline / multi-step orchestration (v0.3.0)
+
+## Contributing
+
+Issues and PRs welcome. The bar is "does it keep the engine small and the routing debuggable." See [CONTRIBUTING.md](CONTRIBUTING.md) for development flow and the right way to add a provider.
 
 ## Philosophy
 
-The engine stays small: routing, memory, providers, and API. Domain logic lives in Nadis.
+Most AI tools today are wrappers around a single provider. They become useless the day that provider raises prices, changes terms, or gets bought. Nadiru is the opposite shape. It gets more useful as the provider landscape gets messier, because the orchestration layer is where the value sits when there are a hundred models and you need to pick the right one.
+
+Your data, your providers, your routing logic. The Conductor is yours to choose.
 
 *From the deepest point flows the purest intelligence.*
 
 ## License
 
-MIT — [HLK Devs](https://github.com/hlk-devs).
-
+MIT. Copyright HLK Devs. See [LICENSE](LICENSE).
