@@ -115,7 +115,7 @@ Every `/generate` response includes which provider and model handled it, why, wh
 
 A Nadi is anything that talks to the engine. CLI, web app, automation script, IDE plugin, whatever. You register it once, get an ID, and from then on the engine logs interactions under that ID and learns from them. Each Nadi has its own history and the Conductor uses that history when routing.
 
-There's a companion repo at [nadiru-nadis](https://github.com/hlk-devs/nadiru-nadis) with six example Nadis: a web dashboard, a CLI chat, a cost reporter, a health monitor, a translator, and a summarizer. Worth cloning if you want to see what building a Nadi looks like.
+There's a companion repo at [nadiru-nadis](https://github.com/hlk-devs/nadiru-nadis) with thirteen example Nadis covering chat, code review, cost tracking, web scraping, code generation, and more. Worth cloning if you want to see what building a Nadi looks like.
 
 ## Supported providers
 
@@ -143,32 +143,32 @@ Any other OpenAI-compatible API works. Add an env var and a `PROVIDER_MAP` entry
 
 ```
 nadiru-engine/
-├── README.md
-├── CHANGELOG.md
-├── CONTRIBUTING.md
-├── CODE_OF_CONDUCT.md
-├── LICENSE
-├── pyproject.toml
-├── requirements.txt
-├── .env.example
-├── docs/
-│   ├── CONDUCTOR_DESIGN.md
-│   └── images/
-│       └── dashboard.png
-├── nadiru_engine/
-│   ├── __main__.py
-│   ├── service.py
-│   ├── conductor.py
-│   ├── memory.py
-│   ├── model_catalog.py
-│   ├── model_registry.json
-│   └── providers/
-│       ├── base.py
-│       ├── registry.py
-│       ├── ollama_provider.py
-│       ├── openai_compatible_provider.py
-│       └── ...
-└── tests/
+â”œâ”€â”€ README.md
+â”œâ”€â”€ CHANGELOG.md
+â”œâ”€â”€ CONTRIBUTING.md
+â”œâ”€â”€ CODE_OF_CONDUCT.md
+â”œâ”€â”€ LICENSE
+â”œâ”€â”€ pyproject.toml
+â”œâ”€â”€ requirements.txt
+â”œâ”€â”€ .env.example
+â”œâ”€â”€ docs/
+â”‚   â”œâ”€â”€ CONDUCTOR_DESIGN.md
+â”‚   â””â”€â”€ images/
+â”‚       â””â”€â”€ dashboard.png
+â”œâ”€â”€ nadiru_engine/
+â”‚   â”œâ”€â”€ __main__.py
+â”‚   â”œâ”€â”€ service.py
+â”‚   â”œâ”€â”€ conductor.py
+â”‚   â”œâ”€â”€ memory.py
+â”‚   â”œâ”€â”€ model_catalog.py
+â”‚   â”œâ”€â”€ model_registry.json
+â”‚   â””â”€â”€ providers/
+â”‚       â”œâ”€â”€ base.py
+â”‚       â”œâ”€â”€ registry.py
+â”‚       â”œâ”€â”€ ollama_provider.py
+â”‚       â”œâ”€â”€ openai_compatible_provider.py
+â”‚       â””â”€â”€ ...
+â””â”€â”€ tests/
 ```
 
 The engine stays small on purpose. Routing, memory, providers, API. Everything else lives in Nadis.
