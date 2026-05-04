@@ -4,7 +4,7 @@
       "provider": "anthropic",
       "cost_per_1m_input": 3.0,
       "cost_per_1m_output": 15.0,
-      "max_output_tokens": 8192,
+      "max_output_tokens": 16384,
       "max_context_window": 200000,
       "speed_tier": "medium",
       "quality_tier": 4
@@ -184,7 +184,7 @@
       "provider": "anthropic",
       "cost_per_1m_input": 3.0,
       "cost_per_1m_output": 15.0,
-      "max_output_tokens": 8192,
+      "max_output_tokens": 16384,
       "max_context_window": 200000,
       "speed_tier": "medium",
       "quality_tier": 4
@@ -202,7 +202,7 @@
       "provider": "anthropic",
       "cost_per_1m_input": 15.0,
       "cost_per_1m_output": 75.0,
-      "max_output_tokens": 8192,
+      "max_output_tokens": 32000,
       "max_context_window": 200000,
       "speed_tier": "slow",
       "quality_tier": 5
@@ -386,6 +386,15 @@
       "max_context_window": 512000,
       "speed_tier": "fast",
       "quality_tier": 3
+    },
+    "claude-opus-4-7": {
+      "provider": "anthropic",
+      "cost_per_1m_input": 15.0,
+      "cost_per_1m_output": 75.0,
+      "max_output_tokens": 32000,
+      "max_context_window": 200000,
+      "speed_tier": "slow",
+      "quality_tier": 5
     }
   },
   "default_metadata": {

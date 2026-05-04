@@ -94,6 +94,63 @@ class Conductor:
             return active
         return [m for m in active if m.name != self._conductor_model]
 
+
+    def _estimate_input_tokens(
+        self,
+        prompt: str,
+        messages: list[dict] | None = None,
+        system_prompt: str | None = None,
+    ) -> int:
+        """Conservative input token estimate for context-window filtering.
+
+        Uses chars / 3.5 as a rough proxy. Slightly overestimates so we
+        skip models that are borderline rather than picking them and
+        getting a 400 from the provider.
+        """
+        total_chars = len(prompt or "")
+        if system_prompt:
+            total_chars += len(system_prompt)
+        if messages:
+            for m in messages:
+                if isinstance(m, dict):
+                    c = m.get("content", "")
+                    if isinstance(c, str):
+                        total_chars += len(c)
+        # Add 200-char safety margin for role tags, formatting overhead
+        return int(total_chars / 3.5) + 200
+
+    def _model_fits_context(
+        self,
+        model: ModelInfo,
+        estimated_input_tokens: int,
+        max_output_tokens: int = 2048,
+        safety_margin: int = 1000,
+    ) -> bool:
+        """Whether this model's context window can hold input + reserved output.
+
+        Conservative: leaves a safety margin so we don't bump up against the
+        exact ceiling. Better to escalate to a bigger-context model than to
+        get a 400 from the provider.
+        """
+        ctx = getattr(model, "max_context_window", 0) or 0
+        if ctx <= 0:
+            # Unknown context window. Assume it fits.
+            return True
+        needed = estimated_input_tokens + max_output_tokens + safety_margin
+        return ctx >= needed
+
+    def _filter_models_by_context(
+        self,
+        models: list[ModelInfo],
+        estimated_input_tokens: int,
+        max_output_tokens: int = 2048,
+    ) -> list[ModelInfo]:
+        """Drop models whose context window can't hold the input."""
+        return [
+            m for m in models
+            if self._model_fits_context(m, estimated_input_tokens, max_output_tokens)
+        ]
+
     def _detect_refusal(self, content: str) -> bool:
         """True if content looks like a content-policy refusal (substring match, case-insensitive)."""
         if not content:
@@ -133,6 +190,8 @@ class Conductor:
         priority: str = "balanced",
         max_cost: float = None,
         prefer_provider: str = None,
+        system_prompt: Optional[str] = None,
+        max_tokens: Optional[int] = None,
     ) -> dict:
         """Classify, route, execute, persist interaction, and return response payload."""
         started = time.time()
@@ -155,26 +214,76 @@ class Conductor:
         model_name = routing.get("model")
         routing_reason = routing.get("reason", "")
 
+        # --- estimate input tokens up front for context-aware retries ---
+        estimated_input = self._estimate_input_tokens(prompt, messages)
+
         if route == "local" or (not provider_name and not model_name):
             if self._is_local_conductor:
                 result = await self._conductor_provider.generate(
                     model_name=self._conductor_model,
                     prompt=prompt,
                     messages=messages,
+                    system_prompt=system_prompt,
+                    max_tokens=max_tokens,
                     temperature=self._temp_for_type(task_type),
                 )
             else:
-                result = await self._delegate_cheapest(prompt, messages, task_type)
+                result = await self._delegate_cheapest(
+                    prompt, messages, task_type,
+                    estimated_input_tokens=estimated_input,
+                    system_prompt=system_prompt,
+                    max_tokens=max_tokens,
+                )
                 if not routing_reason:
                     routing_reason = "Cloud conductor local route mapped to cheapest delegated model"
         else:
-            result = await self._delegate(provider_name, model_name, prompt, messages, task_type)
-            if result.error and result.error != "no_api_key":
-                fallback = self._pick_fallback(provider_name, model_name)
-                if fallback:
-                    fb_provider, fb_model = fallback
-                    routing_reason += f" | Fallback from {provider_name}/{model_name}"
-                    result = await self._delegate(fb_provider, fb_model, prompt, messages, task_type)
+            # Up to 3 attempts. Each attempt excludes prior-failed pairs.
+            tried_pairs: set[tuple[str, str]] = set()
+            current_provider, current_model = provider_name, model_name
+            result = None
+
+            for attempt in range(3):
+                tried_pairs.add((current_provider, current_model))
+                result = await self._delegate(
+                    current_provider, current_model, prompt, messages, task_type,
+                    system_prompt=system_prompt,
+                    max_tokens=max_tokens,
+                )
+                # Success: real content, no error flag
+                if result and result.content and not result.error:
+                    if attempt > 0:
+                        routing_reason += f" | Recovered on attempt {attempt + 1}"
+                    break
+                # auth errors are config issues
+                if result and result.error == "no_api_key":
+                    break
+                # Try next fallback that fits context and isn't already tried
+                fallback = self._pick_fallback(
+                    failed_provider=current_provider,
+                    failed_model=current_model,
+                    estimated_input_tokens=estimated_input,
+                    excluded_pairs=tried_pairs,
+                )
+                if not fallback:
+                    break
+                fb_provider, fb_model = fallback
+                routing_reason += (
+                    f" | Fallback {attempt + 1} from {current_provider}/{current_model} "
+                    f"to {fb_provider}/{fb_model} ({result.error if result else 'unknown'})"
+                )
+                current_provider, current_model = fb_provider, fb_model
+
+            if result is None or result.error or not (result.content or "").strip():
+                error_detail = (
+                    result.error if result and result.error
+                    else "no result returned"
+                )
+                error_msg = (
+                    f"All delegation attempts failed. Last error: {error_detail}. "
+                    f"Tried: {[f'{p}/{m}' for p, m in tried_pairs]}"
+                )
+                logger.error(error_msg)
+                raise RuntimeError(error_msg)
 
         if result.content and self._detect_refusal(result.content):
             retry_provider, retry_model = self._pick_retry_after_refusal(
@@ -308,7 +417,8 @@ class Conductor:
         if prov and prov.is_available and model_name:
             return prov, model_name, routing_reason or "", task_type, complexity
 
-        fb = self._delegate_fallback(available, "Provider unavailable; using fallback")
+        estimated_input = self._estimate_input_tokens(prompt, messages)
+        fb = self._delegate_fallback(available, "Provider unavailable; using fallback", estimated_input_tokens=estimated_input)
         if fb.get("provider") and fb.get("model"):
             pn, mn = fb["provider"], fb["model"]
             p2 = self.providers.get(pn)
@@ -428,9 +538,12 @@ JSON: {{"route":"local|delegate","provider":"<name|null>","model":"<name|null>",
         return False
 
     def _best_delegate_pair(
-        self, available_providers: list[dict], provider_name: str
+        self,
+        available_providers: list[dict],
+        provider_name: str,
+        estimated_input_tokens: int = 0,
     ) -> Optional[tuple[str, str]]:
-        """Pick best tier model for a provider using only names listed in available_providers."""
+        """Pick best tier model for a provider, optionally filtered by context budget."""
         meta = next((x for x in available_providers if x["name"] == provider_name), None)
         if not meta or not meta.get("models"):
             return None
@@ -440,6 +553,8 @@ JSON: {{"route":"local|delegate","provider":"<name|null>","model":"<name|null>",
             return None
         allowed = set(meta["models"])
         pool = [m for m in self._active_models_for_routing(pn, prov) if m.name in allowed]
+        if estimated_input_tokens > 0:
+            pool = self._filter_models_by_context(pool, estimated_input_tokens)
         if not pool:
             return None
         best = self._pick_best_model_from_models(pool)
@@ -485,14 +600,23 @@ JSON: {{"route":"local|delegate","provider":"<name|null>","model":"<name|null>",
         )
         return out
 
-    def _delegate_fallback(self, available_providers: list[dict], reason: str) -> dict:
-        """Pick first paid provider with non-empty startup active models."""
+    def _delegate_fallback(
+        self,
+        available_providers: list[dict],
+        reason: str,
+        estimated_input_tokens: int = 0,
+    ) -> dict:
+        """Pick first paid provider with active models that can fit input."""
         for meta in available_providers:
             name = meta.get("name")
             provider = self.providers.get(name) if name else None
             if not provider or not provider._active_models:
                 continue
             eligible = self._active_models_for_routing(name, provider)
+            if not eligible:
+                continue
+            if estimated_input_tokens > 0:
+                eligible = self._filter_models_by_context(eligible, estimated_input_tokens)
             if not eligible:
                 continue
             best = self._pick_best_model_from_models(eligible)
@@ -515,27 +639,42 @@ JSON: {{"route":"local|delegate","provider":"<name|null>","model":"<name|null>",
     async def _delegate_cheapest(
         self,
         prompt: str,
-        messages: list[dict] = None,
-        task_type: str = "unknown",
+        messages: list[dict] | None,
+        task_type: str,
+        estimated_input_tokens: int = 0,
+        system_prompt: Optional[str] = None,
+        max_tokens: Optional[int] = None,
     ) -> GenerateResult:
-        """Use the lowest-cost paid model when no local executor exists."""
-        cheapest: Optional[tuple[float, str, str]] = None
+        """Pick the cheapest paid model that can fit the input, fallback to conductor model."""
+        cheapest = None
         for name, provider in self.providers.items():
             if name == "ollama" or not provider.is_available:
                 continue
             for model in self._active_models_for_routing(name, provider):
+                if estimated_input_tokens > 0 and not self._model_fits_context(
+                    model, estimated_input_tokens
+                ):
+                    continue
                 option = (model.cost_per_1m_output, name, model.name)
                 if cheapest is None or option[0] < cheapest[0]:
                     cheapest = option
 
         if cheapest:
             _, provider_name, model_name = cheapest
-            return await self._delegate(provider_name, model_name, prompt, messages, task_type)
+            return await self._delegate(
+                provider_name, model_name, prompt, messages, task_type,
+                system_prompt=system_prompt,
+                max_tokens=max_tokens,
+            )
 
+        # Fallback to conductor model. Don't pass max_tokens here because the
+        # conductor model is small and shouldn't be tasked with full deep audits;
+        # if we got here, the user is using Nadiru without paid providers.
         return await self._conductor_provider.generate(
             model_name=self._conductor_model,
             prompt=prompt,
             messages=messages,
+            system_prompt=system_prompt,
             temperature=self._temp_for_type(task_type),
         )
 
@@ -546,6 +685,8 @@ JSON: {{"route":"local|delegate","provider":"<name|null>","model":"<name|null>",
         prompt: str,
         messages: list[dict] = None,
         task_type: str = "unknown",
+        system_prompt: Optional[str] = None,
+        max_tokens: Optional[int] = None,
     ) -> GenerateResult:
         """Send generation request to a specific provider/model."""
         provider = self.providers.get(provider_name)
@@ -563,12 +704,17 @@ JSON: {{"route":"local|delegate","provider":"<name|null>","model":"<name|null>",
                 provider=provider_name,
                 error="no_api_key",
             )
-        return await provider.generate(
-            model_name=model_name,
-            prompt=prompt,
-            messages=messages,
-            temperature=self._temp_for_type(task_type),
-        )
+        gen_kwargs = {
+            "model_name": model_name,
+            "prompt": prompt,
+            "messages": messages,
+            "temperature": self._temp_for_type(task_type),
+        }
+        if system_prompt is not None:
+            gen_kwargs["system_prompt"] = system_prompt
+        if max_tokens is not None:
+            gen_kwargs["max_tokens"] = max_tokens
+        return await provider.generate(**gen_kwargs)
 
     def _check_cold_start_override(
         self,
@@ -627,17 +773,41 @@ JSON: {{"route":"local|delegate","provider":"<name|null>","model":"<name|null>",
         n, m = sorted(candidates, key=lambda x: x[1].cost_per_1m_output)[0]
         return n, m.name
 
-    def _pick_fallback(self, failed_provider: str, failed_model: str) -> Optional[tuple[str, str]]:
-        """One retry: next provider, avoiding first model when possible."""
+    def _pick_fallback(
+        self,
+        failed_provider: str,
+        failed_model: str,
+        estimated_input_tokens: int = 0,
+        excluded_pairs: set[tuple[str, str]] | None = None,
+    ) -> Optional[tuple[str, str]]:
+        """Pick a fallback provider/model after a failure."""
+        excluded = set(excluded_pairs or [])
+        excluded.add((failed_provider, failed_model))
+
+        candidates: list[tuple[str, ModelInfo]] = []
         for name, provider in self.providers.items():
-            if name in (failed_provider, "ollama") or not provider.is_available:
+            if name == "ollama" or not provider.is_available:
                 continue
-            eligible = self._active_models_for_routing(name, provider)
-            if not eligible:
-                continue
-            names = [m.name for m in eligible]
-            return name, (names[1] if len(names) > 1 else names[0])
-        return "ollama", self._conductor_model
+            for m in self._active_models_for_routing(name, provider):
+                if (name, m.name) in excluded:
+                    continue
+                if estimated_input_tokens > 0 and not self._model_fits_context(
+                    m, estimated_input_tokens
+                ):
+                    continue
+                candidates.append((name, m))
+
+        if not candidates:
+            return None
+
+        only_models = [m for _, m in candidates]
+        best = self._pick_best_model_from_models(only_models)
+        if not best:
+            return None
+        for prov_name, m in candidates:
+            if m.name == best.name:
+                return prov_name, best.name
+        return None
 
     def _get_signals(self) -> dict:
         """Return cached user signals or compute from memory."""
@@ -662,17 +832,29 @@ JSON: {{"route":"local|delegate","provider":"<name|null>","model":"<name|null>",
         return available
 
     @staticmethod
-    def _pick_best_model_from_models(models: list[ModelInfo]) -> Optional[ModelInfo]:
-        """Prefer mid-tier (3-4), then cheapest tier 5, else cheapest overall."""
+    def _pick_best_model_from_models(
+        models: list[ModelInfo],
+        excluded_names: set[str] | None = None,
+    ) -> Optional[ModelInfo]:
+        """Prefer mid-tier (3-4), then cheapest tier 5, else cheapest overall.
+
+        excluded_names: optional set of model names to skip.
+        """
         if not models:
             return None
-        mid = [m for m in models if 3 <= m.quality_tier <= 4]
+        candidates = (
+            [m for m in models if m.name not in excluded_names]
+            if excluded_names else list(models)
+        )
+        if not candidates:
+            return None
+        mid = [m for m in candidates if 3 <= m.quality_tier <= 4]
         if mid:
             return sorted(mid, key=lambda m: (-m.quality_tier, m.cost_per_1m_output))[0]
-        tier5 = [m for m in models if m.quality_tier == 5]
+        tier5 = [m for m in candidates if m.quality_tier == 5]
         if tier5:
             return sorted(tier5, key=lambda m: m.cost_per_1m_output)[0]
-        return min(models, key=lambda m: m.cost_per_1m_output)
+        return min(candidates, key=lambda m: m.cost_per_1m_output)
 
     def _coerce_delegate_to_active_models(self, routing: dict) -> dict:
         """Remap delegate targets to IDs present in provider._active_models (post-discovery)."""

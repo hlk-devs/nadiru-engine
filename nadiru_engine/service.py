@@ -40,6 +40,11 @@ class GenerateRequest(BaseModel):
     max_cost: Optional[float] = None
     prefer_provider: Optional[str] = None
     stream: bool = False
+    # NEW: system prompt to be passed to the chosen provider's generate() call
+    system_prompt: Optional[str] = None
+    # NEW: max output tokens to be passed to the chosen provider's generate() call.
+    # When None, the provider's per-model default applies.
+    max_tokens: Optional[int] = None
 
 class GenerateResponse(BaseModel):
     content: str
@@ -275,6 +280,8 @@ async def generate(req: GenerateRequest):
         priority=priority,
         max_cost=req.max_cost,
         prefer_provider=req.prefer_provider,
+        system_prompt=req.system_prompt,
+        max_tokens=req.max_tokens,
     )
 
     return GenerateResponse(**result)

@@ -65,7 +65,6 @@ class AnthropicProvider(BaseProvider):
             "model": model_name,
             "max_tokens": max_tokens,
             "messages": api_messages,
-            "temperature": temperature,
         }
         if system_prompt:
             payload["system"] = system_prompt
@@ -77,7 +76,7 @@ class AnthropicProvider(BaseProvider):
         }
 
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=600.0) as client:
                 resp = await client.post(self.API_URL, json=payload, headers=headers)
                 resp.raise_for_status()
                 data = resp.json()
@@ -113,6 +112,7 @@ class AnthropicProvider(BaseProvider):
                 content=f"ERROR: {str(e)}",
                 model=model_name, provider="anthropic", error="unknown",
             )
+
     async def stream_generate(
         self, model_name: str, prompt: str,
         messages: list[dict] = None,
@@ -134,7 +134,6 @@ class AnthropicProvider(BaseProvider):
             "model": model_name,
             "max_tokens": max_tokens,
             "messages": api_messages,
-            "temperature": temperature,
             "stream": True,
         }
         if system_prompt:
@@ -145,7 +144,7 @@ class AnthropicProvider(BaseProvider):
             "content-type": "application/json",
         }
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
+            async with httpx.AsyncClient(timeout=600.0) as client:
                 async with client.stream("POST", self.API_URL, json=payload, headers=headers) as resp:
                     resp.raise_for_status()
                     async for line in resp.aiter_lines():
@@ -172,4 +171,5 @@ class AnthropicProvider(BaseProvider):
             )
             if result.content:
                 yield result.content
+
 
