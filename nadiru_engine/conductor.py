@@ -780,28 +780,51 @@ JSON: {{"route":"local|delegate","provider":"<name|null>","model":"<name|null>",
         estimated_input_tokens: int = 0,
         excluded_pairs: set[tuple[str, str]] | None = None,
     ) -> Optional[tuple[str, str]]:
-        """Pick a fallback provider/model after a failure."""
+        """Pick a fallback provider/model after a failure.
+
+        Priority: another paid provider, then local conductor (ollama), then
+        another model on the same paid provider.
+        """
         excluded = set(excluded_pairs or [])
         excluded.add((failed_provider, failed_model))
 
-        candidates: list[tuple[str, ModelInfo]] = []
+        def _fits(m: ModelInfo) -> bool:
+            if estimated_input_tokens <= 0:
+                return True
+            return self._model_fits_context(m, estimated_input_tokens)
+
+        other_paid: list[tuple[str, ModelInfo]] = []
+        same_paid: list[tuple[str, ModelInfo]] = []
         for name, provider in self.providers.items():
             if name == "ollama" or not provider.is_available:
                 continue
             for m in self._active_models_for_routing(name, provider):
-                if (name, m.name) in excluded:
+                if (name, m.name) in excluded or not _fits(m):
                     continue
-                if estimated_input_tokens > 0 and not self._model_fits_context(
-                    m, estimated_input_tokens
-                ):
-                    continue
-                candidates.append((name, m))
+                if name == failed_provider:
+                    same_paid.append((name, m))
+                else:
+                    other_paid.append((name, m))
 
+        picked = self._pick_best_from_candidate_pairs(other_paid)
+        if picked:
+            return picked
+
+        if self._is_local_conductor:
+            ollama = self.providers.get("ollama")
+            if ollama and ollama.is_available:
+                local_pair = ("ollama", self._conductor_model)
+                if local_pair not in excluded:
+                    return local_pair
+
+        return self._pick_best_from_candidate_pairs(same_paid)
+
+    def _pick_best_from_candidate_pairs(
+        self, candidates: list[tuple[str, ModelInfo]]
+    ) -> Optional[tuple[str, str]]:
         if not candidates:
             return None
-
-        only_models = [m for _, m in candidates]
-        best = self._pick_best_model_from_models(only_models)
+        best = self._pick_best_model_from_models([m for _, m in candidates])
         if not best:
             return None
         for prov_name, m in candidates:
